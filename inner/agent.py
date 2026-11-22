@@ -228,19 +228,49 @@ def _mock_completion(intent: str, context: str, ep: Endpoint) -> dict:
             source_rule_ids=["R-UNAUTH-01", "R-UNAUTH-02"],
         )
     elif intent == "FEEDBACK_REPLY":
-        base.update(
-            intent_summary="客户提交了业务反馈，诉求已登记，需给出指引或转人工。",
-            reasoning_summary="反馈类诉求按固定口径指引自助渠道办理，不承诺任何业务结果。",
-            missing_information=[],
-            recommended_next_step="GUIDE_APP_QUERY",
-            risk_flags=[],
-            source_rule_ids=["R-FB-01"],
-            customer_reply=(
-                "您好，感谢您的反馈，您反映的问题我们已记录并安排跟进。"
-                "相关业务也可以先在手机银行 App 对应功能页面自助查询或办理，会更加便捷。"
-                "如未能解决您的问题，欢迎直接回复补充具体情况，我会继续为您核实处理。"
-                "如需人工客服，回复“转人工”即可。"),
-        )
+        # v1.5.6：Mock 也按客户实际问的事给差异化答复（离线/断网时的演示与回归基线）
+        ctx = context or ""
+        if any(k in ctx for k in ("争议", "不是我刷", "不是本人")):
+            base.update(
+                intent_summary="客户咨询交易争议的提交渠道与所需材料。",
+                reasoning_summary="流程咨询类，低风险，给出入口与材料清单即可，不承诺时限。",
+                missing_information=[], recommended_next_step="REQUEST_DISPUTE_FORM", risk_flags=[],
+                source_rule_ids=["R-DISPUTE-01", "R-DISPUTE-02"],
+                customer_reply=("您好，交易争议可以在手机银行 App「我的-交易争议」提交，提交时需完成身份核验。"
+                                "请准备四项信息：交易时间、交易金额、商户名称、争议原因说明；有交易截图或回单也请一并保留。"))
+        elif any(k in ctx for k in ("看不懂", "扣款", "商户", "账单")):
+            base.update(
+                intent_summary="客户对一笔扣款的商户或用途存疑。",
+                reasoning_summary="信息不足，先引导按商户号查明细，并追问时间与金额。",
+                missing_information=["交易时间", "交易金额"], recommended_next_step="COLLECT_MORE_INFO", risk_flags=[],
+                source_rule_ids=["R-TXN-01", "R-TXN-02"],
+                customer_reply=("您好，建议先在手机银行 App「我的-交易明细」里按商户名称或金额找到这笔记录，"
+                                "可以看到渠道与商户信息。麻烦补充一下交易时间和大致金额，我帮您进一步核实。"))
+        elif any(k in ctx for k in ("冻结", "解冻", "急用钱", "挂失")):
+            base.update(
+                intent_summary="客户卡片状态异常，要求尽快解除限制。",
+                reasoning_summary="涉及账户安全与身份核验，超出自动答复范围，须转人工。",
+                missing_information=[], recommended_next_step="HUMAN_REVIEW", risk_flags=["HUMAN_REVIEW_REQUIRED"],
+                source_rule_ids=["R-UNAUTH-01", "R-UNAUTH-02"],
+                customer_reply=("您好，为保障您的资金安全，这个问题需要人工核实身份后处理，已为您转接人工客服优先跟进，"
+                                "请保持电话畅通。请不要向任何人透露短信验证码和密码。"))
+        elif any(k in ctx for k in ("年费", "费率", "免年费")):
+            base.update(
+                intent_summary="客户咨询信用卡年费政策与减免条件。",
+                reasoning_summary="政策咨询类，指引官方查询入口，不承诺减免。",
+                missing_information=[], recommended_next_step="GUIDE_APP_QUERY", risk_flags=[],
+                source_rule_ids=["R-TXN-01"],
+                customer_reply=("您好，年费政策与卡种和用卡达标情况有关，可在手机银行 App「信用卡-我的卡片-年费查询」"
+                                "或官网费率公告查看，具体以银行最新公告为准。"))
+        else:
+            base.update(
+                intent_summary="客户提交了业务反馈，需给出指引或转人工。",
+                reasoning_summary="按固定口径指引自助渠道办理，不承诺任何业务结果。",
+                missing_information=[], recommended_next_step="GUIDE_APP_QUERY", risk_flags=[],
+                source_rule_ids=["R-FB-01"],
+                customer_reply=("您好，感谢您的反馈，您反映的问题我们已记录并安排跟进。"
+                                "相关业务可以先在手机银行 App 对应功能页面自助查询或办理。"
+                                "如未能解决，回复补充具体情况，我会继续为您核实；需要人工可直接回复“转人工”。"))
     else:  # PENDING_CONFIRM：模型给出倾向性建议，但动作与规则冲突，用于演示"规则优先"
         base.update(
             intent_summary="客户诉求表述不明确，可能同时涉及查询与争议。",

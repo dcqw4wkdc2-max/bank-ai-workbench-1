@@ -44,7 +44,7 @@ from common.schema import (
     RestoreRequest, UserStateRequest, FEEDBACK_CATEGORIES,
 )
 
-from . import auth, db, service
+from . import auth, db, kb, service
 from .agent import NiumashiAgent
 from .privacy import PrivacyService
 
@@ -1144,16 +1144,26 @@ def _fb_compose_reply(category: str, body: str, history: list[dict] | None = Non
         agent_input = ("会话记录：\n" + "\n".join(lines) +
                        f"\n请针对客户最新消息撰写回复；客户已提供过的信息不要重复询问。"
                        f"客户最新消息：{body}")
-    # v1.5.5：把内网规则库摘要一起给模型——回答要有出处，不是自由发挥
+    # v1.5.6：知识库检索（BM25）——命中条款连编号给模型，命中为空则退回全量规则
     _intent_for_rules = {"ACCOUNT": "TRANSACTION_QUERY", "CREDIT_CARD": "DISPUTE_PROCESS",
                          "LOAN": "PENDING_CONFIRM", "OTHER": "DISPUTE_PROCESS"}.get(category, "DISPUTE_PROCESS")
     try:
         _rules = db.rules_for(_intent_for_rules) or []
-        if _rules:
+        _kbi = kb.get_kb(_rules)
+        _hits = _kbi.search(body, k=3)
+        if _hits:
+            agent_input += ("\n\n知识库命中条款（回答必须与之一致；customer_reply 结尾用【条款号】标注引用了哪一条，"
+                            "不得编造未列出的政策）：\n" + _kbi.as_context(_hits))
+            meta["kb_hits"] = [h["id"] for h in _hits]
+            audit.log("inner", "KB_RETRIEVED", actor="system",
+                      detail={"query_len": len(body), "hits": meta["kb_hits"],
+                              "scores": [h["score"] for h in _hits]})
+        elif _rules:
             _lines = [f"- [{r.get('rule_id')}] {str(r.get('summary') or '')[:80]}" for r in _rules[:6]]
             agent_input += "\n\n可引用的内网规则（回答须与之一致，不得编造未列出的政策）：\n" + "\n".join(_lines)
-    except Exception:
-        pass
+            meta["kb_hits"] = [r.get("rule_id") for r in _rules[:6]]
+    except Exception as _kbe:
+        runlog.warning("kb_retrieval_failed", extra={"extra_data": {"error": str(_kbe)[:120]}})
     try:
         plan = NiumashiAgent().plan("FEEDBACK_REPLY", agent_input)
         out = plan.get("output") or {}
