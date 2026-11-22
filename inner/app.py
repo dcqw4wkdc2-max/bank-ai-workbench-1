@@ -1144,6 +1144,16 @@ def _fb_compose_reply(category: str, body: str, history: list[dict] | None = Non
         agent_input = ("会话记录：\n" + "\n".join(lines) +
                        f"\n请针对客户最新消息撰写回复；客户已提供过的信息不要重复询问。"
                        f"客户最新消息：{body}")
+    # v1.5.5：把内网规则库摘要一起给模型——回答要有出处，不是自由发挥
+    _intent_for_rules = {"ACCOUNT": "TRANSACTION_QUERY", "CREDIT_CARD": "DISPUTE_PROCESS",
+                         "LOAN": "PENDING_CONFIRM", "OTHER": "DISPUTE_PROCESS"}.get(category, "DISPUTE_PROCESS")
+    try:
+        _rules = db.rules_for(_intent_for_rules) or []
+        if _rules:
+            _lines = [f"- [{r.get('rule_id')}] {str(r.get('summary') or '')[:80]}" for r in _rules[:6]]
+            agent_input += "\n\n可引用的内网规则（回答须与之一致，不得编造未列出的政策）：\n" + "\n".join(_lines)
+    except Exception:
+        pass
     try:
         plan = NiumashiAgent().plan("FEEDBACK_REPLY", agent_input)
         out = plan.get("output") or {}
@@ -1171,8 +1181,13 @@ def _fb_compose_reply(category: str, body: str, history: list[dict] | None = Non
 
     # 客户答复：优先用模型产出的客户话术；命中意图提示时改用对应模板（保证动作码与话术一致）
     reply = ""
-    if (customer_reply and not meta.get("intent_hint")
-            and len(customer_reply) <= 300 and not _FB_INTERNAL_RE.search(customer_reply)):
+    # v1.5.5：只要模型话术合规就用它（此前命中意图提示就退回模板，导致不同问题回答雷同）
+    _ok_model = (bool(customer_reply) and len(customer_reply) <= 300
+                 and not _FB_INTERNAL_RE.search(customer_reply))
+    if _ok_model and step == "HUMAN_REVIEW" and not ("人工" in customer_reply or "转接" in customer_reply):
+        _ok_model = False          # 转人工场景必须明确告知已转人工，否则用模板兜底
+        meta["degraded"] = (meta.get("degraded", "") + " handoff_wording_missing").strip()
+    if _ok_model:
         reply = customer_reply
         meta["reply_source"] = "model"
     else:
